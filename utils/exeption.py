@@ -20,6 +20,18 @@ class ElementStaleError(ElementInteractionError):
         super().__init__(message, locator, original_error)
 
 
+class ElementNotClickableError(ElementInteractionError):
+    """Element bosilmaydigan holatda"""
+    def __init__(self, message="Element bosilmaydigan holatda", locator=None, original_error=None):
+        super().__init__(message, locator, original_error)
+        
+    
+class ElementVisibilityError(ElementInteractionError):
+    """Element ko'rinmaydigan holatda"""
+    def __init__(self, message="Element ko'rinish holati kutilgandek emas", locator=None, original_error=None):
+        super().__init__(message, locator, original_error)
+
+
 class ScrollError(ElementInteractionError):
     """Scroll qilishda xatolik"""
     def __init__(self, message="Scroll qilib bolmadi", locator=None, original_error=None):
