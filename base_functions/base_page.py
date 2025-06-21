@@ -1,10 +1,11 @@
 import os
 import time
-
 from datetime import datetime
 
 from colorama import init
+from selenium.webdriver import Keys
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
@@ -177,6 +178,39 @@ class BasePage:
             if error_message:
                 self.logger.warning(f"❗  {page_name}: {message}: {locator}: {str(e)}")
             raise ElementInteractionError(message, locator, e)
+
+    # ===============================================================================================
+
+    def click_input_by_text(self, locator, element_text, input_type='checkbox'):
+        """
+        Texti bo‘yicha input (checkbox yoki radio) ni topib bosadi
+        """
+        page_name = self.__class__.__name__
+
+        elements = self._wait_for_presence_all(locator, visible_only=True)
+        if not elements:
+            message = f"{input_type}lar topilmadi yoki ko‘rinmayapti"
+            self.logger.warning(f"{page_name}: {message}: {locator}")
+            raise ElementNotFoundError(message, locator)
+
+        for element in elements:
+            text = element.text.strip()
+            if text == element_text:
+                self.logger.info(f"{page_name}: '{element_text}' topildi – tanlanmoqda...")
+                input_element = element.find_element(By.TAG_NAME, 'input')
+
+                if not input_element.is_displayed():
+                    self._scroll_to_element(input_element, locator)
+
+                status = input_element.is_selected()
+                if not status:
+                    input_element.click()
+                self.logger.info(f"{page_name}: '{element_text}' {'tanlandi' if not status else 'avvaldan tanlangan'}")
+                return True
+
+        message = f"'{element_text}' matnli {input_type} topilmadi."
+        self.logger.warning(f"{page_name}: {message}: {locator}")
+        raise ElementNotFoundError(message, locator)
 
     # ===============================================================================================
 
@@ -440,4 +474,208 @@ class BasePage:
             raise
 
     # ==============================================================================================
+
+    def get_text(self, locator, retries=3, retry_delay=2):
+        """Elementning matnini olish"""
+
+        page_name = self.__class__.__name__
+        self.logger.debug(f"{page_name}: Running -> get_text: {locator}")
+
+        attempt = 0
+        while attempt < retries:
+            try:
+                element_dom = self.wait_for_element(locator, wait_type='presence')
+                self._scroll_to_element(element_dom, locator)
+                element = self.wait_for_element(locator, wait_type='visibility')
+
+                self.logger.info(f"{page_name}: Element text -> '{element.text}'")
+                return element.text if element else None
+
+            except ElementStaleError:
+                self.logger.warning(f"Element yangilandi, qayta urinish ({attempt + 1})")
+                attempt += 1
+                time.sleep(retry_delay)
+
+            except Exception as e:
+                self.logger.error(f"Element matnini olishda xato: {str(e)}")
+                raise
+
+    # ================================================================================================
+
+    def _is_choose_dropdown_option(self, input_locator, element_text):
+        input_element = self.wait_for_element(input_locator, wait_type='visibility')
+        selected_text = input_element.get_attribute("value")
+        if selected_text == element_text:
+            self.logger.info(f"Option avvaldan tanlangan: {selected_text}")
+            return True
+        else:
+            self.logger.info("Input tozalanmoqda....")
+            self.clear_element(input_locator)
+            return False
+
+    # ==================================================================================================
+
+    def _find_and_click_option(self, element, options, options_locator):
+        """Element topish va bosish funksiyasi"""
+        element_str = str(element).strip()
+
+        for option in options:
+            for _ in range(3):
+                option_text = option.text.strip()
+                if option_text:
+                    break
+                self.logger.warning(f"Option text topilmadi, qayta uriniladi...")
+                time.sleep(1)
+
+            if option_text == element_str:
+                self.logger.info(f"Element topildi: '{option_text}', click qilinadi...")
+                if self.click(option, options_locator) or self._click(option, options_locator, retry=True):
+                    return True
+        return False
+
+    # ================================================================================================================
+
+    def click_options(self, input_locator, options_locator, element_text, screenshot=True):
+        """Dropdown bilan ishlash funksiyasi. <select> ichidan <option> ni tanlaydi"""
+        page_name = self.__class__.__name__
+        self.logger.debug(f"{page_name}: Running -> click_options: {element_text} - {input_locator}")
+
+        try:
+            # Avvaldan tanlanganligini tekshirish
+            if self._is_choose_dropdown_option(input_locator, element_text):
+                return True
+
+            # Select elementini kutish, kerak bolsa scroll qilish
+
+            select_element = self.wait_for_element(input_locator, wait_type='visibility')
+            if not select_element.is_displayed():
+                self._scroll_to_element(select_element, input_locator)
+
+            options = select_element.find_elements(By.TAG_NAME, 'option')
+            if not options:
+                message = "❗ Optionlar ro'yxati bo'sh!"
+                self.logger.warning(f"{page_name}: {message}: {input_locator}")
+                raise ElementNotFoundError(message, input_locator)
+
+            if self._find_and_click_option(element_text, options, options_locator):
+                return True
+
+            message = f"'{element_text}' option topilmadi <select> ichidan"
+            self.logger.warning(message)
+            raise ElementNotFoundError(message, input_locator)
+
+        except Exception as e:
+            message = f"{page_name}: option tanlashda da kutilmagan xatolik - {str(e)}"
+            self.logger.error(message)
+            self.take_screenshot(f"{page_name.lower()}_click_options_error")
+            raise
+
+    # ========================================================================================================
+
+    def _check_dropdown_closed(self, options_locator, retry_count=3):
+        """Dropdown yopilganini tekshirish"""
+        page_name = self.__class__.__name__
+
+        if self._wait_for_invisibility_of_locator(options_locator, timeout=2, raise_error=False):
+            self.logger.info("Dropdown yopildi!")
+            return True
+
+        for attempt in range(retry_count):
+            try:
+                self.logger.warning(f"❗ Dropdown yopilmadi, urinish: {attempt + 1}/{retry_count}")
+                self.logger.info("Sahifani bosh joyiga bosiladi")
+                self.driver.execute_script("document.body.click();")
+                if self._wait_for_invisibility_of_locator(options_locator, timeout=2, raise_error=True):
+                    self.logger.info("Dropdown yopildi! (Sahifani bo'sh qismiga bosish orqali)")
+                    return True
+
+                self.logger.warning("Dropdown yopilmadi, ESCAPE bosiladi...")
+                body = self.wait_for_element((By.TAG_NAME, 'body'), wait_type='presence')
+                body.send_keys(Keys.ESCAPE)
+                if self._wait_for_invisibility_of_locator(options_locator, timeout=2, raise_error=False):
+                    self.logger.info("Dropdown yopildi! (ESCAPE bosish orqali)")
+                    return True
+
+            except (ElementNotFoundError, ElementStaleError) as ee:
+                self.logger.warning(f"ESCAPE bosishda xatolik: {str(ee)}")
+                continue
+
+            except ElementVisibilityError as eve:
+                self.logger.warning(f"Dropdown yopilmadi! {str(eve)}")
+                continue
+
+        self.logger.error(f"Dropdown yopilmadi ({retry_count} marta urinishdan keyin ham)")
+        self.take_screenshot(f"{page_name.lower()}_dropdown_close_error")
+        return False
+
+    # =============================================================================================================
+
+    def close_ads(self, timeout=5):
+
+        page_name = self.__class__.__name__
+
+        ad_close_xpaths = [
+            "//span[text() = 'Close']",
+            "//div[@id='dismiss-button']"
+        ]
+
+        for xpath in ad_close_xpaths:
+            locator = (By.XPATH, xpath)
+            try:
+                close_btn = WebDriverWait(self.driver, timeout).until(EC.visibility_of_element_located(locator))
+                self._js_click(close_btn, locator)
+                self.logger.info(f"{page_name}: Reklama yopildi: {xpath}")
+                return True
+
+            except TimeoutException:
+                self.logger.debug(f"{page_name}: Reklama topilmadi yoki {timeout} soniya ichida chiqmadi: {xpath}")
+
+            except Exception as e:
+                self.logger.warning(f"{page_name}: Reklama yopishda xatolik: {xpath}: {str(e)}")
+                self.take_screenshot(f"{page_name.lower()}_unexpected_ad_error")
+                continue
+
+        self.logger.debug(f"{page_name}: Hech qanday reklama topilmadi.")
+        return False
+
+    # ==================================================================================================================
+
+    def handle_alert(self, accept=True, second_alert=True, timeout=10):
+        """
+        Alert oynasini boshqarish
+        accept=True - OK bosiladi, aks holda Cancel
+        handle_followup=True - Keyingi alert chiqsa avtomatik OK bosadi
+        """
+        page_name = self.__class__.__name__
+
+        try:
+            WebDriverWait(self.driver, timeout).until(EC.alert_is_present())
+            alert = self.driver.switch_to.alert
+            self.logger.info(f"{page_name}: Alert matni: '{alert.text.strip()}'")
+
+            action = 'accept' if accept else 'dismiss'
+            getattr(alert, action)()
+            self.logger.info(f"{page_name}: {'OK' if accept else 'Cancel'} bosildi.")
+
+            # Keyingi alert (Agar chiqsa, OK qilish)
+            if second_alert:
+                try:
+                    WebDriverWait(self.driver, timeout).until(EC.alert_is_present())
+                    second = self.driver.switch_to.alert
+                    self.logger.info(f"{page_name}: Keyingi alert matni: '{second.text.strip()}'")
+                    second.accept()
+                    self.logger.info(f"{page_name}: Keyingi alert OK bosildi.")
+                except TimeoutException:
+                    self.logger.debug(f"{page_name}: Keyingi alert chiqmadi.")
+            return True
+
+        except TimeoutException:
+            self.logger.debug(f"{page_name}: Alert {timeout} soniya ichida chiqmadi")
+
+        except Exception as e:
+            self.logger.error(f"{page_name}: Alert boshqarishda xatolik: {str(e)}")
+            self.take_screenshot(f"{page_name.lower()}_alert_error")
+            raise
+
+
 
