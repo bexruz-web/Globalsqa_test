@@ -160,7 +160,7 @@ class BasePage:
                 raise ElementStaleError(message, locator, e)
 
         except TimeoutException as e:
-            message = f"Element {timeout}s ichida {wait_type}shartiga yetmadi."
+            message = f"Element {timeout}s ichida {wait_type} shartiga yetmadi."
             if error_message:
                 self.logger.warning(f"{page_name}: {message}: {locator}: {str(e)}")
             if screenshot:
@@ -204,7 +204,13 @@ class BasePage:
 
                 status = input_element.is_selected()
                 if not status:
-                    input_element.click()
+                    try:
+                        input_element.click()
+                        self.logger.info(f"{page_name}: Oddiy click bajarildi.")
+                    except WebDriverException:
+                        self.logger.warning(f"{page_name}: Oddiy click ishlamadi, JS click sinab ko‘riladi.")
+                        self._js_click(input_element)
+
                 self.logger.info(f"{page_name}: '{element_text}' {'tanlandi' if not status else 'avvaldan tanlangan'}")
                 return True
 
@@ -214,8 +220,9 @@ class BasePage:
 
     # ===============================================================================================
 
-    def click(self, locator, retries=3, retry_delay=3):
+    def click(self, locator, retries=3, retry_delay=2):
         """Asosiy click funksiyasi"""
+
         page_name = self.__class__.__name__
         self.logger.debug(f"{page_name}: Running click: {locator}")
 
@@ -224,34 +231,39 @@ class BasePage:
             try:
                 element_dom = self.wait_for_element(locator, wait_type="presence")
                 self._scroll_to_element(element_dom, locator)
-                self.wait_for_element(locator, wait_type='visibility')
-                element_clickable = self.wait_for_element(locator, wait_type='clickable')
+                self.wait_for_element(locator, wait_type="visibility")
+                element_clickable = self.wait_for_element(locator, wait_type="clickable")
                 if element_clickable and self._click(element_clickable, locator):
                     return True
 
                 time.sleep(retry_delay)
-                self.logger.info("Retry Click sinab ko'riladi")
-                element_clickable = self.wait_for_element(locator, wait_type='clickable')
+                self.logger.info("Retry Click sinab ko'riladi...")
+                element_clickable = self.wait_for_element(locator, wait_type="clickable")
                 if element_clickable and self._click(element_clickable, locator, retry=True):
                     return True
 
                 time.sleep(retry_delay)
-                self.logger.info("Majburiy JS Click sinab ko'riladi")
+                self.logger.info("Majburiy JS Click sinab ko'riladi...")
                 element_dom = self.wait_for_element(locator, wait_type="presence")
                 if element_dom and self._js_click(element_dom, locator):
                     return True
 
             except (ElementStaleError, ScrollError, JavaScriptError) as e:
-                self.logger.warning(f"❗ Kutilmagan xatolik: {str(e)}: {locator}")
+                self.logger.warning(f"{page_name}: Qayta urinish ({attempt + 1}/{retries}): {str(e)}")
+                time.sleep(retry_delay)
+
+            except Exception as e:
+                self.logger.warning(f"Kutilmagan xatolik: {str(e)}: {locator}")
                 self.take_screenshot(f"{page_name.lower()}_click_error")
                 raise
 
             attempt += 1
 
-        message = f"Element barcha usullar bilan ham bosilmadi ({attempt}/{retries})"
-        self.logger.warning(f"❗ {page_name}: {message}: {locator}")
+        message = f"Element barcha usullar bilan bosilmadi ({attempt}/{retries})"
+        self.logger.warning(f"{page_name}: {message}: {locator}")
         self.take_screenshot(f"{page_name.lower()}_click_all_error")
         raise ElementInteractionError(message, locator)
+
 
     # ==============================================================================================
 
@@ -509,17 +521,16 @@ class BasePage:
             self.logger.info(f"Option avvaldan tanlangan: {selected_text}")
             return True
         else:
-            self.logger.info("Input tozalanmoqda....")
-            self.clear_element(input_locator)
+            self.logger.info("Input boshqa qiymatda")
             return False
-
     # ==================================================================================================
 
-    def _find_and_click_option(self, element, options, options_locator):
+    def _find_and_click_option(self, element, options):
         """Element topish va bosish funksiyasi"""
         element_str = str(element).strip()
 
         for option in options:
+            option_text = None
             for _ in range(3):
                 option_text = option.text.strip()
                 if option_text:
@@ -529,13 +540,13 @@ class BasePage:
 
             if option_text == element_str:
                 self.logger.info(f"Element topildi: '{option_text}', click qilinadi...")
-                if self.click(option, options_locator) or self._click(option, options_locator, retry=True):
+                if self._click(option, retry=True):
                     return True
         return False
 
     # ================================================================================================================
 
-    def click_options(self, input_locator, options_locator, element_text, screenshot=True):
+    def click_options(self, input_locator, element_text, screenshot=True):
         """Dropdown bilan ishlash funksiyasi. <select> ichidan <option> ni tanlaydi"""
         page_name = self.__class__.__name__
         self.logger.debug(f"{page_name}: Running -> click_options: {element_text} - {input_locator}")
@@ -557,7 +568,7 @@ class BasePage:
                 self.logger.warning(f"{page_name}: {message}: {input_locator}")
                 raise ElementNotFoundError(message, input_locator)
 
-            if self._find_and_click_option(element_text, options, options_locator):
+            if self._find_and_click_option(element_text, options):
                 return True
 
             message = f"'{element_text}' option topilmadi <select> ichidan"
@@ -608,39 +619,9 @@ class BasePage:
         self.take_screenshot(f"{page_name.lower()}_dropdown_close_error")
         return False
 
-    # =============================================================================================================
-
-    def close_ads(self, timeout=5):
-
-        page_name = self.__class__.__name__
-
-        ad_close_xpaths = [
-            "//span[text() = 'Close']",
-            "//div[@id='dismiss-button']"
-        ]
-
-        for xpath in ad_close_xpaths:
-            locator = (By.XPATH, xpath)
-            try:
-                close_btn = WebDriverWait(self.driver, timeout).until(EC.visibility_of_element_located(locator))
-                self._js_click(close_btn, locator)
-                self.logger.info(f"{page_name}: Reklama yopildi: {xpath}")
-                return True
-
-            except TimeoutException:
-                self.logger.debug(f"{page_name}: Reklama topilmadi yoki {timeout} soniya ichida chiqmadi: {xpath}")
-
-            except Exception as e:
-                self.logger.warning(f"{page_name}: Reklama yopishda xatolik: {xpath}: {str(e)}")
-                self.take_screenshot(f"{page_name.lower()}_unexpected_ad_error")
-                continue
-
-        self.logger.debug(f"{page_name}: Hech qanday reklama topilmadi.")
-        return False
-
     # ==================================================================================================================
 
-    def handle_alert(self, accept=True, second_alert=True, timeout=10):
+    def handle_alert(self, accept=True, second_alert=False, timeout=10):
         """
         Alert oynasini boshqarish
         accept=True - OK bosiladi, aks holda Cancel
